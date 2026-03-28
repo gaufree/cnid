@@ -1,489 +1,638 @@
-// Package cnid provides Chinese ID card validation and parsing.
-// MIT License - © gaufree
+// Package cnid 提供中国居民身份证和外国人永久居留身份证的校验、解析和生成功能
+// 支持新旧版身份证，包括：
+// - 中国居民身份证（15 位旧版和 18 位新版）
+// - 外国人永久居留身份证（旧版 15 位和 2023 新版 18 位）
+//
+// MIT License
+// Copyright (c) 2026 Mark Chen (gaufree)
 package cnid
 
 import (
-	"errors"
+	"crypto/rand"
 	"fmt"
+	"math/big"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 )
 
-// IDType 身份证类型
-type IDType int
-
+// 身份证类型常量
 const (
-	TypeUnknown IDType = iota
-	TypeChinese    // 中国公民身份证 (18位)
-	TypeForeigner  // 外国人居留身份证 (18位)
+	TypeUnknown         = iota // 未知类型
+	TypeResidentOld15          // 中国居民身份证旧版（15 位）
+	TypeResidentNew18          // 中国居民身份证新版（18 位）
+	TypeForeignOld15           // 外国人永久居留身份证旧版（15 位，3 字母 +12 数字）
+	TypeForeignNew18           // 外国人永久居留身份证新版（18 位，以 9 开头）
 )
 
-// ErrInvalidID 无效的身份证号码
-var ErrInvalidID = errors.New("invalid ID number")
+// 校验码系数（ISO 7064:1983.MOD 11-2）
+var weightFactor = []int{7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2}
 
-// ChineseID 中国公民身份证结构
-type ChineseID struct {
-	Number     string    // 身份证号码
-	RegionCode string    // 地区代码
-	Birthday   time.Time // 出生日期
-	Sex        int       // 性别: 0-女, 1-男
-	Sequence   int       // 顺序码
-	Checksum   rune      // 校验码
+// 校验码映射表
+var checkCodeMap = []string{"1", "0", "X", "9", "8", "7", "6", "5", "4", "3", "2"}
+
+// 地区代码正则（简化的验证）
+var areaCodePattern = regexp.MustCompile(`^[1-9]\d{5}$`)
+
+// 外国人永久居留身份证新版正则（18 位，以 9 开头，第 2-4 位为字母国籍代码）
+// 格式：9 + 国籍代码 (3 位字母) + 申领地代码 (2 位数字) + 出生日期 (8 位数字) + 顺序码 (3 位数字) + 校验码 (1 位)
+var foreignNewPattern = regexp.MustCompile(`^9[A-Z]{3}\d{13}[0-9X]$`)
+
+// 外国人永久居留身份证旧版正则（3 字母 +12 数字）
+var foreignOldPattern = regexp.MustCompile(`^[A-Z]{3}\d{12}$`)
+
+// IDInfo 身份证信息结构
+type IDInfo struct {
+	Type        int       // 身份证类型
+	IDNumber    string    // 身份证号码（标准化后的大写格式）
+	BirthDate   time.Time // 出生日期
+	Gender      string    // 性别（"男" 或 "女"）
+	AreaCode    string    // 地区代码
+	Nationality string    // 国籍代码（仅外国人永久居留身份证）
+	IssuePlace  string    // 申领地代码（仅外国人永久居留身份证）
 }
 
-// ForeignerID 外国人居留身份证结构
-type ForeignerID struct {
-	Number      string    // 证件号码
-	CountryCode string    // 国籍代码 (2位数字)
-	CountryName string    // 国籍名称
-	RegionCode  string    // 地区代码 (停留或居留地)
-	Birthday    time.Time // 出生日期
-	Sex         int       // 性别: 0-女, 1-男
-	Sequence    int       // 顺序码
-	IsPermanent bool      // 是否长期有效
-	Checksum    rune      // 校验码
-}
-
-// IDInfo 统一的信息接口
-type IDInfo interface {
-	GetType() IDType
-	GetNumber() string
-	GetBirthday() time.Time
-	GetSex() int
-	GetRegionCode() string
-	IsValid() bool
-}
-
-// GetType 获取身份证类型
-func (id *ChineseID) GetType() IDType { return TypeChinese }
-
-// GetNumber 获取身份证号码
-func (id *ChineseID) GetNumber() string { return id.Number }
-
-// GetBirthday 获取出生日期
-func (id *ChineseID) GetBirthday() time.Time { return id.Birthday }
-
-// GetSex 获取性别 (0:女, 1:男)
-func (id *ChineseID) GetSex() int { return id.Sex }
-
-// GetRegionCode 获取地区代码
-func (id *ChineseID) GetRegionCode() string { return id.RegionCode }
-
-// IsValid 验证身份证是否有效
-func (id *ChineseID) IsValid() bool {
-	return id.Number != "" && !id.Birthday.IsZero()
-}
-
-// GetType 获取身份证类型
-func (id *ForeignerID) GetType() IDType { return TypeForeigner }
-
-// GetNumber 获取证件号码
-func (id *ForeignerID) GetNumber() string { return id.Number }
-
-// GetBirthday 获取出生日期
-func (id *ForeignerID) GetBirthday() time.Time { return id.Birthday }
-
-// GetSex 获取性别 (0:女, 1:男)
-func (id *ForeignerID) GetSex() int { return id.Sex }
-
-// GetRegionCode 获取地区代码
-func (id *ForeignerID) GetRegionCode() string { return id.RegionCode }
-
-// IsValid 验证证件是否有效
-func (id *ForeignerID) IsValid() bool {
-	return id.Number != "" && !id.Birthday.IsZero()
-}
-
-// chineseIDRegex 中国公民身份证正则 (18位)
-var chineseIDRegex = regexp.MustCompile(`^[1-9]\d{5}(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dXx]$`)
-
-// foreignerIDRegex 外国人居留身份证正则 (16位)
-// 格式: 8 + 国家代码(2位) + 地区代码(4位) + 出生日期(6位YYMMDD) + 顺序码(2位) + 校验码(1位)
-var foreignerIDRegex = regexp.MustCompile(`^8\d{2}\d{4}\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{2}[\dXx]$`)
-
-// 权重系数 (用于校验码计算)
-var weightFactors = []int{7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2}
-
-// 校验码映射
-var checksumMap = map[int]rune{
-	0: '0', 1: '1', 2: '2', 3: '3', 4: '4',
-	5: '5', 6: '6', 7: '7', 8: '8', 9: '9',
-	10: 'X',
-}
-
-// 2位数字国家代码映射 (部分常见国家)
-var countryCodeMapping = map[string]string{
-	"01": "美国",
-	"02": "英国",
-	"03": "德国",
-	"04": "法国",
-	"05": "日本",
-	"06": "韩国",
-	"07": "俄罗斯",
-	"08": "加拿大",
-	"09": "澳大利亚",
-	"10": "印度",
-	"11": "巴西",
-	"12": "意大利",
-	"13": "西班牙",
-	"14": "墨西哥",
-	"15": "荷兰",
-	"16": "瑞典",
-	"17": "挪威",
-	"18": "丹麦",
-	"19": "芬兰",
-	"20": "瑞士",
-	"21": "比利时",
-	"22": "奥地利",
-	"23": "波兰",
-	"24": "乌克兰",
-	"25": "哈萨克斯坦",
-	"26": "新加坡",
-	"27": "马来西亚",
-	"28": "泰国",
-	"29": "越南",
-	"30": "菲律宾",
-	"31": "印度尼西亚",
-	"32": "巴基斯坦",
-	"33": "阿联酋",
-	"34": "沙特阿拉伯",
-	"35": "埃及",
-	"36": "尼日利亚",
-	"37": "南非",
-	"38": "阿根廷",
-	"39": "智利",
-	"40": "哥伦比亚",
-	"41": "秘鲁",
-	"42": "新西兰",
-	"43": "葡萄牙",
-	"44": "希腊",
-	"45": "捷克",
-	"46": "匈牙利",
-	"47": "罗马尼亚",
-	"48": "以色列",
-	"49": "土耳其",
-}
-
-// 地区代码映射表(部分)
-var regionCodeMapping = map[string]string{
-	"110000": "北京市",
-	"110101": "北京市东城区",
-	"110102": "北京市西城区",
-	"110105": "北京市朝阳区",
-	"110106": "北京市丰台区",
-	"110107": "北京市石景山区",
-	"110108": "北京市海淀区",
-	"310000": "上海市",
-	"310101": "上海市黄浦区",
-	"310104": "上海市徐汇区",
-	"310105": "上海市长宁区",
-	"310106": "上海市静安区",
-	"310107": "上海市普陀区",
-	"440000": "广东省",
-	"440100": "广东省广州市",
-	"440300": "广东省深圳市",
-	"330000": "浙江省",
-	"330100": "浙江省杭州市",
-	"320000": "江苏省",
-	"320100": "江苏省南京市",
-	"500000": "重庆市",
-	"510000": "四川省",
-	"510100": "四川省成都市",
-	"610000": "陕西省",
-	"610100": "陕西省西安市",
-}
-
-// Parse 解析身份证号码,自动识别类型
-func Parse(idNumber string) (IDInfo, error) {
-	// 去除空格
-	idNumber = cleanSpaces(idNumber)
-
-	// 先尝试解析为中国公民身份证
-	if chineseIDRegex.MatchString(idNumber) {
-		return ParseChinese(idNumber)
-	}
-
-	// 再尝试解析为外国人居留身份证
-	if foreignerIDRegex.MatchString(idNumber) {
-		return ParseForeigner(idNumber)
-	}
-
-	return nil, ErrInvalidID
-}
-
-// ParseChinese 解析中国公民身份证
-func ParseChinese(idNumber string) (*ChineseID, error) {
-	idNumber = cleanSpaces(idNumber)
-
-	if !chineseIDRegex.MatchString(idNumber) {
-		return nil, ErrInvalidID
-	}
-
-	id := &ChineseID{Number: idNumber}
-
-	// 解析地区代码
-	id.RegionCode = idNumber[0:6]
-	if _, ok := regionCodeMapping[id.RegionCode]; !ok {
-		// 地区代码不在预定义表中,只截取前6位
-	}
-
-	// 解析出生日期
-	birthYear, _ := strconv.Atoi(idNumber[6:10])
-	birthMonth, _ := strconv.Atoi(idNumber[10:12])
-	birthDay, _ := strconv.Atoi(idNumber[12:14])
-	id.Birthday = time.Date(birthYear, time.Month(birthMonth), birthDay, 0, 0, 0, 0, time.UTC)
-
-	// 解析顺序码和性别
-	seq, _ := strconv.Atoi(idNumber[14:17])
-	id.Sequence = seq
-	id.Sex = seq % 2 // 奇数为男,偶数为女
-
-	// 解析校验码
-	id.Checksum = rune(idNumber[17])
-
-	// 验证校验码
-	if !validateChecksum(idNumber) {
-		return nil, ErrInvalidID
-	}
-
-	return id, nil
-}
-
-// ParseForeigner 解析外国人居留身份证
-func ParseForeigner(idNumber string) (*ForeignerID, error) {
-	idNumber = cleanSpaces(idNumber)
-
-	if !foreignerIDRegex.MatchString(idNumber) {
-		return nil, ErrInvalidID
-	}
-
-	id := &ForeignerID{Number: idNumber}
-
-	// 解析国家代码 (第2-3位)
-	countryCode := idNumber[1:3]
-	id.CountryCode = countryCode
-	if name, ok := countryCodeMapping[countryCode]; ok {
-		id.CountryName = name
-	} else {
-		id.CountryName = countryCode
-	}
-
-	// 解析地区代码 (第4-7位,4位)
-	id.RegionCode = idNumber[3:7]
-	if _, ok := regionCodeMapping[id.RegionCode]; !ok {
-		// 地区代码不在预定义表中
-	}
-
-	// 解析出生日期 (第8-13位, 格式为YYMMDD)
-	birthYY, _ := strconv.Atoi(idNumber[7:9])
-	birthMM, _ := strconv.Atoi(idNumber[9:11])
-	birthDD, _ := strconv.Atoi(idNumber[11:13])
-	
-	// 两位数年份需要转换为四位数 (假设1900-1999: 00-99 对应 1900-1999, 00-99 对应 2000-2099)
-	birthYear := 1900 + birthYY
-	if birthYY < 50 {
-		birthYear = 2000 + birthYY
-	}
-	id.Birthday = time.Date(birthYear, time.Month(birthMM), birthDD, 0, 0, 0, 0, time.UTC)
-
-	// 解析顺序码和性别 (第14-15位)
-	seq, _ := strconv.Atoi(idNumber[13:15])
-	id.Sequence = seq
-	id.Sex = seq % 2 // 奇数为男,偶数为女
-
-	// 解析校验码 (第16位)
-	id.Checksum = rune(idNumber[15])
-
-	// 验证校验码
-	if !validateChecksum(idNumber) {
-		return nil, ErrInvalidID
-	}
-
-	return id, nil
-}
-
-// validateChecksum 验证校验码
-func validateChecksum(idNumber string) bool {
-	if len(idNumber) != 18 && len(idNumber) != 16 {
+// Validate 验证身份证号码是否有效
+// 支持中国居民身份证（15 位/18 位）和外国人永久居留身份证（15 位/18 位）
+func Validate(idNumber string) bool {
+	if idNumber == "" {
 		return false
 	}
 
-	// 根据长度选择要验证的位数
-	checkLen := 15 // 对于16位证件,验证前15位
-	if len(idNumber) == 18 {
-		checkLen = 17
-	}
-	
-	idToCheck := idNumber[:checkLen]
-	
-	sum := 0
-	for i := 0; i < checkLen; i++ {
-		digit, _ := strconv.Atoi(string(idToCheck[i]))
-		sum += digit * weightFactors[i]
+	idNumber = strings.ToUpper(strings.TrimSpace(idNumber))
+
+	// 判断身份证类型
+	idType := GetType(idNumber)
+	if idType == TypeUnknown {
+		return false
 	}
 
-	remainder := sum % 11
-	expectedChecksum := checksumMap[remainder]
-
-	return string(idNumber[checkLen]) == string(expectedChecksum) || idNumber[checkLen] == 'x' || idNumber[checkLen] == 'X'
+	switch idType {
+	case TypeResidentOld15:
+		return validateResidentOld15(idNumber)
+	case TypeResidentNew18:
+		return validateResidentNew18(idNumber)
+	case TypeForeignOld15:
+		return validateForeignOld15(idNumber)
+	case TypeForeignNew18:
+		return validateForeignNew18(idNumber)
+	default:
+		return false
+	}
 }
 
-// Validate 验证身份证号码是否有效(通用函数)
-func Validate(idNumber string) bool {
-	_, err := Parse(idNumber)
-	return err == nil
-}
+// GetType 获取身份证类型
+func GetType(idNumber string) int {
+	if idNumber == "" {
+		return TypeUnknown
+	}
 
-// ValidateChinese 验证中国公民身份证号码是否有效
-func ValidateChinese(idNumber string) bool {
-	_, err := ParseChinese(idNumber)
-	return err == nil
-}
+	idNumber = strings.ToUpper(strings.TrimSpace(idNumber))
+	length := len(idNumber)
 
-// ValidateForeigner 验证外国人居留身份证号码是否有效
-func ValidateForeigner(idNumber string) bool {
-	_, err := ParseForeigner(idNumber)
-	return err == nil
-}
-
-// GetRegion 获取地区名称
-func GetRegion(idNumber string) string {
-	cleaned := cleanSpaces(idNumber)
-	if len(cleaned) >= 6 {
-		regionCode := cleaned[0:6]
-		if name, ok := regionCodeMapping[regionCode]; ok {
-			return name
+	// 18 位身份证
+	if length == 18 {
+		// 外国人永久居留身份证新版（以 9 开头）
+		if strings.HasPrefix(idNumber, "9") && foreignNewPattern.MatchString(idNumber) {
+			return TypeForeignNew18
+		}
+		// 中国居民身份证新版
+		if residentNewPattern.MatchString(idNumber) {
+			return TypeResidentNew18
 		}
 	}
-	return ""
-}
 
-// GetCountry 获取国籍(仅对外国人居留身份证有效)
-func GetCountry(idNumber string) string {
-	cleaned := cleanSpaces(idNumber)
-	if len(cleaned) >= 3 && cleaned[0] == '8' {
-		countryCode := cleaned[1:3]
-		if name, ok := countryCodeMapping[countryCode]; ok {
-			return name
+	// 15 位身份证
+	if length == 15 {
+		// 外国人永久居留身份证旧版（3 字母 +12 数字）
+		if foreignOldPattern.MatchString(idNumber) {
+			return TypeForeignOld15
 		}
-		return "" // 未知国家代码返回空
+		// 中国居民身份证旧版（纯数字）
+		if residentOldPattern.MatchString(idNumber) {
+			return TypeResidentOld15
+		}
 	}
-	return ""
-}
 
-// GetIDType 获取身份证类型
-func GetIDType(idNumber string) IDType {
-	cleaned := cleanSpaces(idNumber)
-	if chineseIDRegex.MatchString(cleaned) {
-		return TypeChinese
-	}
-	if foreignerIDRegex.MatchString(cleaned) {
-		return TypeForeigner
-	}
 	return TypeUnknown
 }
 
-// GetAge 计算年龄
-func GetAge(idNumber string) (int, error) {
-	info, err := Parse(idNumber)
-	if err != nil {
-		return 0, err
+// 中国居民身份证旧版正则（15 位纯数字）
+var residentOldPattern = regexp.MustCompile(`^[1-9]\d{14}$`)
+
+// 中国居民身份证新版正则（18 位，前 17 位数字，最后 1 位数字或 X）
+var residentNewPattern = regexp.MustCompile(`^[1-9]\d{16}[0-9X]$`)
+
+// validateResidentOld15 验证 15 位中国居民身份证
+func validateResidentOld15(idNumber string) bool {
+	if !residentOldPattern.MatchString(idNumber) {
+		return false
 	}
 
-	birthday := info.GetBirthday()
-	now := time.Now()
-	age := now.Year() - birthday.Year()
-
-	// 检查是否已经过了生日
-	if now.YearDay() < birthday.YearDay() {
-		age--
+	// 验证地区代码
+	areaCode := idNumber[:6]
+	if !areaCodePattern.MatchString(areaCode) {
+		return false
 	}
 
-	return age, nil
+	// 验证出生日期（YYMMDD 格式）
+	yearStr := "19" + idNumber[6:8]
+	monthStr := idNumber[8:10]
+	dayStr := idNumber[10:12]
+
+	return isValidDate(yearStr, monthStr, dayStr)
 }
 
-// GetBirthdayString 格式化输出出生日期
-func GetBirthdayString(idNumber string) (string, error) {
-	info, err := Parse(idNumber)
-	if err != nil {
-		return "", err
+// validateResidentNew18 验证 18 位中国居民身份证
+func validateResidentNew18(idNumber string) bool {
+	if !residentNewPattern.MatchString(idNumber) {
+		return false
 	}
 
-	return info.GetBirthday().Format("2006-01-02"), nil
-}
-
-// GetSexString 获取性别字符串
-func GetSexString(idNumber string) (string, error) {
-	info, err := Parse(idNumber)
-	if err != nil {
-		return "", err
+	// 验证地区代码
+	areaCode := idNumber[:6]
+	if !areaCodePattern.MatchString(areaCode) {
+		return false
 	}
 
-	sex := info.GetSex()
-	if sex == 1 {
-		return "男", nil
+	// 验证出生日期（YYYYMMDD 格式）
+	yearStr := idNumber[6:10]
+	monthStr := idNumber[10:12]
+	dayStr := idNumber[12:14]
+
+	if !isValidDate(yearStr, monthStr, dayStr) {
+		return false
 	}
-	return "女", nil
+
+	// 验证校验码
+	return validateCheckCode(idNumber)
 }
 
-// String 实现Stringer接口
-func (id *ChineseID) String() string {
-	return fmt.Sprintf("ChineseID{Number: %s, Region: %s, Birthday: %s, Sex: %d}",
-		id.Number, GetRegion(id.Number), id.Birthday.Format("2006-01-02"), id.Sex)
+// validateForeignOld15 验证旧版外国人永久居留身份证（3 字母 +12 数字）
+func validateForeignOld15(idNumber string) bool {
+	// 先转大写再验证
+	idUpper := strings.ToUpper(idNumber)
+	return foreignOldPattern.MatchString(idUpper)
 }
 
-// String 实现Stringer接口
-func (id *ForeignerID) String() string {
-	return fmt.Sprintf("ForeignerID{Number: %s, Country: %s, Region: %s, Birthday: %s, Sex: %d}",
-		id.Number, id.CountryName, GetRegion(id.Number), id.Birthday.Format("2006-01-02"), id.Sex)
+// validateForeignNew18 验证新版外国人永久居留身份证（18 位，以 9 开头）
+func validateForeignNew18(idNumber string) bool {
+	if !foreignNewPattern.MatchString(idNumber) {
+		return false
+	}
+
+	// 验证校验码（外国人永居证需要特殊处理字母）
+	return validateForeignCheckCode(idNumber)
 }
 
-// cleanSpaces 去除字符串中的空格
-func cleanSpaces(s string) string {
-	result := ""
-	for _, c := range s {
-		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
-			result += string(c)
+// validateForeignCheckCode 验证外国人永久居留身份证的校验码
+func validateForeignCheckCode(idNumber string) bool {
+	body := idNumber[:17]
+	expectedCheckCode := checkCodeMap[calculateForeignCheckCodeIndex(body)]
+	actualCheckCode := string(idNumber[17])
+	return actualCheckCode == expectedCheckCode
+}
+
+// calculateForeignCheckCodeIndex 计算外国人永久居留身份证校验码索引
+func calculateForeignCheckCodeIndex(body string) int {
+	sum := 0
+	for i := 0; i < 17; i++ {
+		var num int
+		c := body[i]
+		if c >= 'A' && c <= 'Z' {
+			num = int(c - 'A' + 10)
+		} else {
+			num, _ = strconv.Atoi(string(c))
 		}
+		sum += num * weightFactor[i]
 	}
-	return result
+	return sum % 11
 }
 
-// Mask 脱敏处理 (显示前6位和后4位,中间用*代替)
-func Mask(idNumber string) string {
-	cleaned := cleanSpaces(idNumber)
-	length := len(cleaned)
-
-	if length < 10 {
-		return cleaned
+// validateCheckCode 验证校验码（适用于 18 位身份证）
+func validateCheckCode(idNumber string) bool {
+	sum := 0
+	for i := 0; i < 17; i++ {
+		num, err := strconv.Atoi(string(idNumber[i]))
+		if err != nil {
+			return false
+		}
+		sum += num * weightFactor[i]
 	}
 
-	return cleaned[:6] + "********" + cleaned[length-4:]
+	checkCodeIndex := sum % 11
+	expectedCheckCode := checkCodeMap[checkCodeIndex]
+	actualCheckCode := string(idNumber[17])
+
+	return actualCheckCode == expectedCheckCode
 }
 
-// Hide 隐藏出生日期 (显示XXXX-XX-XX格式)
-func Hide(idNumber string) string {
-	cleaned := cleanSpaces(idNumber)
-
-	if chineseIDRegex.MatchString(cleaned) {
-		// 中国公民身份证: 隐藏月日
-		return cleaned[:6] + "XXXXXX" + cleaned[14:]
+// isValidDate 验证日期是否有效
+func isValidDate(yearStr, monthStr, dayStr string) bool {
+	year, err := strconv.Atoi(yearStr)
+	if err != nil || year < 1900 || year > time.Now().Year() {
+		return false
 	}
 
-	if foreignerIDRegex.MatchString(cleaned) {
-		// 外国人居留身份证: 隐藏生日部分 (YYMMDD在位置8-11, 4位)
-		return cleaned[:8] + "XXXX" + cleaned[12:]
+	month, err := strconv.Atoi(monthStr)
+	if err != nil || month < 1 || month > 12 {
+		return false
 	}
 
-	return cleaned
+	day, err := strconv.Atoi(dayStr)
+	if err != nil || day < 1 || day > 31 {
+		return false
+	}
+
+	// 验证具体日期的有效性（如 2 月 30 日等）
+	date := time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC)
+	return date.Year() == year && int(date.Month()) == month && date.Day() == day
 }
 
-// GetCountryCode 获取国家代码
-func GetCountryCode(idNumber string) string {
-	cleaned := cleanSpaces(idNumber)
-	if len(cleaned) >= 3 && cleaned[0] == '8' {
-		return cleaned[1:3]
+// Parse 解析身份证号码，返回详细信息
+func Parse(idNumber string) (*IDInfo, error) {
+	if idNumber == "" {
+		return nil, fmt.Errorf("身份证号码不能为空")
 	}
-	return ""
+
+	idNumber = strings.ToUpper(strings.TrimSpace(idNumber))
+
+	idType := GetType(idNumber)
+	if idType == TypeUnknown {
+		return nil, fmt.Errorf("无效的身份证号码格式")
+	}
+
+	info := &IDInfo{
+		Type:     idType,
+		IDNumber: idNumber,
+	}
+
+	var err error
+	switch idType {
+	case TypeResidentOld15:
+		err = parseResidentOld15(idNumber, info)
+	case TypeResidentNew18:
+		err = parseResidentNew18(idNumber, info)
+	case TypeForeignOld15:
+		err = parseForeignOld15(idNumber, info)
+	case TypeForeignNew18:
+		err = parseForeignNew18(idNumber, info)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	return info, nil
+}
+
+// parseResidentOld15 解析 15 位中国居民身份证
+func parseResidentOld15(idNumber string, info *IDInfo) error {
+	// 地区代码
+	info.AreaCode = idNumber[:6]
+
+	// 出生日期（YYMMDD，年份默认为 19xx）
+	year := "19" + idNumber[6:8]
+	month := idNumber[8:10]
+	day := idNumber[10:12]
+
+	birthDate, err := parseDate(year, month, day)
+	if err != nil {
+		return err
+	}
+	info.BirthDate = birthDate
+
+	// 性别（第 15 位，奇数为男，偶数为女）
+	genderCode, _ := strconv.Atoi(string(idNumber[14]))
+	if genderCode%2 == 1 {
+		info.Gender = "男"
+	} else {
+		info.Gender = "女"
+	}
+
+	return nil
+}
+
+// parseResidentNew18 解析 18 位中国居民身份证
+func parseResidentNew18(idNumber string, info *IDInfo) error {
+	// 地区代码
+	info.AreaCode = idNumber[:6]
+
+	// 出生日期（YYYYMMDD）
+	year := idNumber[6:10]
+	month := idNumber[10:12]
+	day := idNumber[12:14]
+
+	birthDate, err := parseDate(year, month, day)
+	if err != nil {
+		return err
+	}
+	info.BirthDate = birthDate
+
+	// 性别（第 17 位，奇数为男，偶数为女）
+	genderCode, _ := strconv.Atoi(string(idNumber[16]))
+	if genderCode%2 == 1 {
+		info.Gender = "男"
+	} else {
+		info.Gender = "女"
+	}
+
+	return nil
+}
+
+// parseForeignOld15 解析旧版外国人永久居留身份证
+func parseForeignOld15(idNumber string, info *IDInfo) error {
+	// 前 3 位为国籍代码
+	info.Nationality = idNumber[:3]
+
+	// 第 4-9 位为出生日期（YYYYMM）
+	year := idNumber[3:7]
+	month := idNumber[7:9]
+	day := "01" // 旧版只有年月，日默认为 01
+
+	birthDate, err := parseDate(year, month, day)
+	if err != nil {
+		return err
+	}
+	info.BirthDate = birthDate
+
+	// 性别信息在第 10-12 位中编码，这里简化处理
+	info.Gender = "未知"
+
+	return nil
+}
+
+// parseForeignNew18 解析新版外国人永久居留身份证
+func parseForeignNew18(idNumber string, info *IDInfo) error {
+	// 第 1 位：外国人标识码（固定为 9）
+	// 第 2-4 位：国籍代码
+	info.Nationality = idNumber[1:4]
+
+	// 第 5-6 位：申领地代码
+	info.IssuePlace = idNumber[4:6]
+
+	// 第 7-14 位：出生日期（YYYYMMDD）
+	year := idNumber[6:10]
+	month := idNumber[10:12]
+	day := idNumber[12:14]
+
+	birthDate, err := parseDate(year, month, day)
+	if err != nil {
+		return err
+	}
+	info.BirthDate = birthDate
+
+	// 第 15-17 位：顺序码，其中第 17 位奇数为男，偶数为女
+	genderCode, _ := strconv.Atoi(string(idNumber[16]))
+	if genderCode%2 == 1 {
+		info.Gender = "男"
+	} else {
+		info.Gender = "女"
+	}
+
+	return nil
+}
+
+// parseDate 解析日期字符串
+func parseDate(yearStr, monthStr, dayStr string) (time.Time, error) {
+	year, _ := strconv.Atoi(yearStr)
+	month, _ := strconv.Atoi(monthStr)
+	day, _ := strconv.Atoi(dayStr)
+
+	return time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC), nil
+}
+
+// GenerateResident 生成随机的中国居民身份证号码（18 位）
+// areaCode: 6 位地区代码（可选，为空则随机生成）
+// birthDate: 出生日期（可选，为空则随机生成 1950-2000 年之间的日期）
+// gender: 性别（可选，"男"、"女" 或空表示随机）
+func GenerateResident(areaCode string, birthDate time.Time, gender string) string {
+	// 生成或验证地区代码
+	if areaCode == "" {
+		areaCode = generateAreaCode()
+	} else if len(areaCode) != 6 || !areaCodePattern.MatchString(areaCode) {
+		areaCode = generateAreaCode()
+	}
+
+	// 生成或验证出生日期
+	var year, month, day int
+	if birthDate.IsZero() {
+		// 随机生成 1950-2000 年之间的日期
+		year = randomInt(1950, 2000)
+		month = randomInt(1, 12)
+		day = randomInt(1, 28) // 简化处理，避免月末问题
+	} else {
+		year = birthDate.Year()
+		month = int(birthDate.Month())
+		day = birthDate.Day()
+	}
+
+	// 格式化出生日期
+	dateStr := fmt.Sprintf("%04d%02d%02d", year, month, day)
+
+	// 生成顺序码（第 15-17 位）
+	var orderCode int
+	if gender == "男" {
+		orderCode = randomOdd(1, 999)
+	} else if gender == "女" {
+		orderCode = randomEven(1, 998)
+	} else {
+		orderCode = randomInt(1, 999)
+	}
+	orderStr := fmt.Sprintf("%03d", orderCode)
+
+	// 组合前 17 位
+	body := areaCode + dateStr + orderStr
+
+	// 计算校验码
+	checkCode := calculateCheckCode(body)
+
+	return body + checkCode
+}
+
+// GenerateForeignNew 生成随机的新版外国人永久居留身份证号码（18 位）
+// nationality: 3 位国籍代码（可选）
+// issuePlace: 2 位申领地代码（可选）
+// birthDate: 出生日期（可选）
+// gender: 性别（可选）
+func GenerateForeignNew(nationality, issuePlace string, birthDate time.Time, gender string) string {
+	// 外国人标识码（固定为 9）
+	prefix := "9"
+
+	// 生成国籍代码
+	if nationality == "" || len(nationality) != 3 {
+		nationality = generateNationalityCode()
+	}
+
+	// 生成申领地代码
+	if issuePlace == "" || len(issuePlace) != 2 {
+		issuePlace = fmt.Sprintf("%02d", randomInt(11, 99))
+	}
+
+	// 生成出生日期
+	var year, month, day int
+	if birthDate.IsZero() {
+		year = randomInt(1950, 2000)
+		month = randomInt(1, 12)
+		day = randomInt(1, 28)
+	} else {
+		year = birthDate.Year()
+		month = int(birthDate.Month())
+		day = birthDate.Day()
+	}
+	dateStr := fmt.Sprintf("%04d%02d%02d", year, month, day)
+
+	// 生成顺序码
+	var orderCode int
+	if gender == "男" {
+		orderCode = randomOdd(1, 999)
+	} else if gender == "女" {
+		orderCode = randomEven(1, 998)
+	} else {
+		orderCode = randomInt(1, 999)
+	}
+	orderStr := fmt.Sprintf("%03d", orderCode)
+
+	// 组合前 17 位
+	body := prefix + nationality + issuePlace + dateStr + orderStr
+
+	// 计算校验码（外国人永居证需要特殊处理字母）
+	checkCode := calculateForeignCheckCode(body)
+
+	return body + checkCode
+}
+
+// calculateCheckCode 计算校验码（仅适用于纯数字的 17 位 body）
+func calculateCheckCode(body string) string {
+	sum := 0
+	for i := 0; i < 17; i++ {
+		num, _ := strconv.Atoi(string(body[i]))
+		sum += num * weightFactor[i]
+	}
+	return checkCodeMap[sum%11]
+}
+
+// calculateForeignCheckCode 计算外国人永久居留身份证的校验码
+// 格式：9 + 国籍代码 (3 位字母) + 申领地代码 (2 位数字) + 出生日期 (8 位数字) + 顺序码 (3 位数字)
+// 需要将字母转换为数字：A=10, B=11, ..., Z=35
+func calculateForeignCheckCode(body string) string {
+	sum := 0
+	for i := 0; i < 17; i++ {
+		var num int
+		c := body[i]
+		if c >= 'A' && c <= 'Z' {
+			num = int(c - 'A' + 10)
+		} else {
+			num, _ = strconv.Atoi(string(c))
+		}
+		sum += num * weightFactor[i]
+	}
+	return checkCodeMap[sum%11]
+}
+
+// generateAreaCode 生成随机的地区代码
+func generateAreaCode() string {
+	// 常见的省级行政区代码前缀
+	provinceCodes := []int{11, 12, 13, 14, 15, 21, 22, 23, 31, 32, 33, 34, 35, 36, 37, 41, 42, 43, 44, 45, 46, 50, 51, 52, 53, 54, 61, 62, 63, 64, 65}
+	province := provinceCodes[randomInt(0, len(provinceCodes)-1)]
+	city := randomInt(1, 20)
+	district := randomInt(1, 30)
+	return fmt.Sprintf("%02d%02d%02d", province, city, district)
+}
+
+// generateNationalityCode 生成随机的国籍代码（3 位字母）
+func generateNationalityCode() string {
+	letters := "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	result := make([]byte, 3)
+	for i := range result {
+		idx, _ := rand.Int(rand.Reader, big.NewInt(int64(len(letters))))
+		result[i] = letters[idx.Int64()]
+	}
+	return string(result)
+}
+
+// randomInt 生成指定范围内的随机整数
+func randomInt(min, max int) int {
+	if min > max {
+		min, max = max, min
+	}
+	n, _ := rand.Int(rand.Reader, big.NewInt(int64(max-min+1)))
+	return int(n.Int64()) + min
+}
+
+// randomOdd 生成指定范围内的随机奇数
+func randomOdd(min, max int) int {
+	num := randomInt(min, max)
+	if num%2 == 0 {
+		num++
+	}
+	if num > max {
+		num -= 2
+	}
+	return num
+}
+
+// randomEven 生成指定范围内的随机偶数
+func randomEven(min, max int) int {
+	num := randomInt(min, max)
+	if num%2 == 1 {
+		num++
+	}
+	if num > max {
+		num -= 2
+	}
+	return num
+}
+
+// UpgradeOld15To18 将 15 位中国居民身份证升级到 18 位
+func UpgradeOld15To18(id15 string) (string, error) {
+	if len(id15) != 15 || !residentOldPattern.MatchString(id15) {
+		return "", fmt.Errorf("无效的 15 位身份证号码")
+	}
+
+	// 在年份前添加"19"
+	body := id15[:6] + "19" + id15[6:]
+
+	// 计算校验码
+	checkCode := calculateCheckCode(body)
+
+	return body + checkCode, nil
+}
+
+// GetTypeName 获取身份证类型的中文名称
+func GetTypeName(idType int) string {
+	switch idType {
+	case TypeResidentOld15:
+		return "中国居民身份证旧版（15 位）"
+	case TypeResidentNew18:
+		return "中国居民身份证新版（18 位）"
+	case TypeForeignOld15:
+		return "外国人永久居留身份证旧版（15 位）"
+	case TypeForeignNew18:
+		return "外国人永久居留身份证新版（18 位）"
+	default:
+		return "未知类型"
+	}
+}
+
+// String IDInfo 的字符串表示
+func (info *IDInfo) String() string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("身份证类型：%s\n", GetTypeName(info.Type)))
+	sb.WriteString(fmt.Sprintf("身份证号码：%s\n", info.IDNumber))
+	sb.WriteString(fmt.Sprintf("出生日期：%s\n", info.BirthDate.Format("2006-01-02")))
+	sb.WriteString(fmt.Sprintf("性别：%s\n", info.Gender))
+
+	if info.AreaCode != "" {
+		sb.WriteString(fmt.Sprintf("地区代码：%s\n", info.AreaCode))
+	}
+	if info.Nationality != "" {
+		sb.WriteString(fmt.Sprintf("国籍代码：%s\n", info.Nationality))
+	}
+	if info.IssuePlace != "" {
+		sb.WriteString(fmt.Sprintf("申领地代码：%s\n", info.IssuePlace))
+	}
+
+	return sb.String()
 }

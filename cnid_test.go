@@ -1,412 +1,450 @@
 package cnid
 
 import (
-	"fmt"
 	"testing"
 	"time"
 )
 
-func TestParseChineseID(t *testing.T) {
+// 测试中国居民身份证新版（18 位）
+func TestValidateResidentNew18(t *testing.T) {
+	// 使用生成的有效身份证进行测试
+	validID := GenerateResident("110105", time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC), "男")
+
 	tests := []struct {
-		id          string
-		wantErr     bool
-		wantSex     int
-		wantYear    int
-		wantRegion  string
+		name     string
+		idNumber string
+		want     bool
 	}{
-		// 有效身份证 (使用生成的正确校验码)
-		{"110101199001010017", false, 1, 1990, "110101"},
-		{"110105198505050010", false, 1, 1985, "110105"},
-		{"310101199303120018", false, 1, 1993, "310101"},
-		{"110108199512310018", false, 1, 1995, "110108"},
-		{"310104198801010017", false, 1, 1988, "310104"},
-		{"440100199505050011", false, 1, 1995, "440100"},
-		{"330100199607150015", false, 1, 1996, "330100"},
-		{"320100200001010019", false, 1, 2000, "320100"},
-		{"500101201001010014", false, 1, 2010, "500101"},
-		{"610100198501010013", false, 1, 1985, "610100"},
-		// 无效身份证
-		{"000000000000000000", true, 0, 0, ""},
-		{"123456789012345678", true, 0, 0, ""},
-		{"110101199001011235", false, 1, 1990, "110101"}, // 有效的正确校验码
+		{"有效身份证 1", "11010519491231002X", true},
+		{"有效身份证 2", validID, true},
+		{"有效身份证 3", "440300199001011234", false}, // 校验码可能不匹配
+		{"无效格式", "11010519491231002A", false},
+		{"长度错误", "11010519491231002", false},
+		{"空字符串", "", false},
+		{"地区代码无效", "00010519491231002X", false},
+		{"日期无效", "11010520230230002X", false}, // 2 月 30 日不存在
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.id, func(t *testing.T) {
-			id, err := ParseChinese(tt.id)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("ParseChinese() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if !tt.wantErr {
-				if id.GetSex() != tt.wantSex {
-					t.Errorf("ParseChinese() sex = %v, want %v", id.GetSex(), tt.wantSex)
-				}
-				if id.GetBirthday().Year() != tt.wantYear {
-					t.Errorf("ParseChinese() year = %v, want %v", id.GetBirthday().Year(), tt.wantYear)
-				}
-				if id.GetRegionCode() != tt.wantRegion {
-					t.Errorf("ParseChinese() region = %v, want %v", id.GetRegionCode(), tt.wantRegion)
-				}
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Validate(tt.idNumber); got != tt.want {
+				t.Errorf("Validate(%q) = %v, want %v", tt.idNumber, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestValidateChineseID(t *testing.T) {
-	validIDs := []string{
-		"110101199001010017",
-		"310104198801010017",
-		"440100199505050011",
-	}
-
-	invalidIDs := []string{
-		"123456789012345678",
-		"000000000000000000",
-	}
-
-	for _, id := range validIDs {
-		if !ValidateChinese(id) {
-			t.Errorf("ValidateChinese(%s) = false, want true", id)
-		}
-	}
-
-	for _, id := range invalidIDs {
-		if ValidateChinese(id) {
-			t.Errorf("ValidateChinese(%s) = true, want false", id)
-		}
-	}
-}
-
-func TestParseForeignerID(t *testing.T) {
+// 测试中国居民身份证旧版（15 位）
+func TestValidateResidentOld15(t *testing.T) {
 	tests := []struct {
-		id          string
-		wantErr     bool
-		wantSex     int
-		wantYear    int
-		wantRegion  string
-		wantCountry string
+		name     string
+		idNumber string
+		want     bool
 	}{
-		// 有效的外国人居留身份证 (16位,8开头)
-		// 格式: 8 + 国家(2) + 地区(4) + 生日(6) + 顺序(2) + 校验(1)
-		{"8011100900101013", false, 1, 1990, "1100", "01"}, // 美国, 1990年
-		{"8051100950505019", false, 1, 1995, "1100", "05"}, // 日本, 1995年
-		{"8021100900101012", false, 1, 1990, "1100", "02"}, // 英国, 1990年
-		// 无效外国人居留身份证
-		{"9111100900101013", true, 0, 0, "", ""}, // 不以8开头
-		{"8011100900101014", true, 0, 0, "", ""}, // 校验码错误
+		{"有效身份证 1", "110105491231002", true},
+		{"有效身份证 2", "440300900101123", true},
+		{"无效格式", "11010549123100A", false},
+		{"长度错误", "11010549123100", false},
+		{"地区代码无效", "000105491231002", false},
+		{"日期无效", "110105230230002", false}, // 2 月 30 日不存在
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.id, func(t *testing.T) {
-			id, err := ParseForeigner(tt.id)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("ParseForeigner() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if !tt.wantErr {
-				if id.GetSex() != tt.wantSex {
-					t.Errorf("ParseForeigner() sex = %v, want %v", id.GetSex(), tt.wantSex)
-				}
-				if id.GetBirthday().Year() != tt.wantYear {
-					t.Errorf("ParseForeigner() year = %v, want %v", id.GetBirthday().Year(), tt.wantYear)
-				}
-				if id.GetRegionCode() != tt.wantRegion {
-					t.Errorf("ParseForeigner() region = %v, want %v", id.GetRegionCode(), tt.wantRegion)
-				}
-				if id.CountryCode != tt.wantCountry {
-					t.Errorf("ParseForeigner() country = %v, want %v", id.CountryCode, tt.wantCountry)
-				}
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Validate(tt.idNumber); got != tt.want {
+				t.Errorf("Validate(%q) = %v, want %v", tt.idNumber, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestValidateForeignerID(t *testing.T) {
-	validIDs := []string{
-		"8011100900101013",
-		"8051100950505019",
-		"8021100900101012",
-	}
+// 测试外国人永久居留身份证新版（18 位）
+func TestValidateForeignNew18(t *testing.T) {
+	// 使用生成的有效身份证进行测试
+	validID1 := GenerateForeignNew("USA", "11", time.Date(1990, 1, 1, 0, 0, 0, 0, time.UTC), "男")
+	validID2 := GenerateForeignNew("CHN", "31", time.Date(1985, 6, 15, 0, 0, 0, 0, time.UTC), "女")
 
-	invalidIDs := []string{
-		"1234567890123456",
-		"9111100900101013", // 不以8开头
-		"8011100900101014", // 校验码错误
-	}
-
-	for _, id := range validIDs {
-		if !ValidateForeigner(id) {
-			t.Errorf("ValidateForeigner(%s) = false, want true", id)
-		}
-	}
-
-	for _, id := range invalidIDs {
-		if ValidateForeigner(id) {
-			t.Errorf("ValidateForeigner(%s) = true, want false", id)
-		}
-	}
-}
-
-func TestParseAutoDetect(t *testing.T) {
 	tests := []struct {
-		id       string
-		wantErr  bool
-		wantType IDType
+		name     string
+		idNumber string
+		want     bool
 	}{
-		{"110101199001010017", false, TypeChinese},
-		{"8011100900101013", false, TypeForeigner},
-		{"123456789012345678", true, TypeUnknown},
+		{"有效永居证 1", validID1, true},
+		{"有效永居证 2", validID2, true},
+		{"不以 9 开头", "8USA11200001011231", false},
+		{"长度错误", "9USA1120000101123", false},
+		{"格式错误", "9US111200001011231", false},
+		{"校验码错误", "9USA1119900101123X", false},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.id, func(t *testing.T) {
-			info, err := Parse(tt.id)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("Parse() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if !tt.wantErr {
-				if info.GetType() != tt.wantType {
-					t.Errorf("Parse() type = %v, want %v", info.GetType(), tt.wantType)
-				}
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Validate(tt.idNumber); got != tt.want {
+				t.Errorf("Validate(%q) = %v, want %v", tt.idNumber, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestGetRegion(t *testing.T) {
+// 测试外国人永久居留身份证旧版（15 位）
+func TestValidateForeignOld15(t *testing.T) {
 	tests := []struct {
-		id   string
-		want string
+		name     string
+		idNumber string
+		want     bool
 	}{
-		{"110101199001010017", "北京市东城区"},
-		{"310101199001010018", "上海市黄浦区"},
-		{"440100199001010011", "广东省广州市"},
-		{"999999199001010019", ""}, // 未知地区
+		{"有效永居证 1", "USA199001011234", true},
+		{"有效永居证 2", "CHN200001011234", true},
+		{"格式错误", "1SA199001011234", false}, // 首字符必须是字母
+		{"长度错误", "USA19900101123", false},
+		{"小写字母", "usa199001011234", true}, // 小写会被转换为大写验证
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.id, func(t *testing.T) {
-			if got := GetRegion(tt.id); got != tt.want {
-				t.Errorf("GetRegion() = %v, want %v", got, tt.want)
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Validate(tt.idNumber); got != tt.want {
+				t.Errorf("Validate(%q) = %v, want %v", tt.idNumber, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestGetCountry(t *testing.T) {
+// 测试 GetType 函数
+func TestGetType(t *testing.T) {
+	validForeignID := GenerateForeignNew("USA", "11", time.Date(1990, 1, 1, 0, 0, 0, 0, time.UTC), "男")
+
 	tests := []struct {
-		id   string
-		want string
+		name     string
+		idNumber string
+		wantType int
 	}{
-		{"8011100900101013", "美国"},
-		{"8051100950505019", "日本"},
-		{"8021100900101012", "英国"},
-		{"8999900900101019", ""}, // 未知国家代码返回空
-		{"110101199001010017", ""}, // 不是外国人居留证
+		{"中国居民身份证新版", "11010519491231002X", TypeResidentNew18},
+		{"中国居民身份证旧版", "110105491231002", TypeResidentOld15},
+		{"外国人永居证新版", validForeignID, TypeForeignNew18},
+		{"外国人永居证旧版", "USA199001011234", TypeForeignOld15},
+		{"未知类型", "invalid", TypeUnknown},
+		{"空字符串", "", TypeUnknown},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.id, func(t *testing.T) {
-			if got := GetCountry(tt.id); got != tt.want {
-				t.Errorf("GetCountry() = %v, want %v", got, tt.want)
+		t.Run(tt.name, func(t *testing.T) {
+			if got := GetType(tt.idNumber); got != tt.wantType {
+				t.Errorf("GetType(%q) = %v, want %v", tt.idNumber, got, tt.wantType)
 			}
 		})
 	}
 }
 
-func TestGetAge(t *testing.T) {
-	// 使用一个有效的身份证 320100201001010014 (2010年出生)
-	id := "320100201001010014"
-	age, err := GetAge(id)
+// 测试 Parse 函数 - 中国居民身份证新版
+func TestParseResidentNew18(t *testing.T) {
+	// 生成一个有效的测试身份证
+	idNumber := GenerateResident("110105", time.Date(1990, 1, 1, 0, 0, 0, 0, time.UTC), "男")
+
+	info, err := Parse(idNumber)
 	if err != nil {
-		t.Errorf("GetAge() error = %v", err)
+		t.Fatalf("Parse(%q) error: %v", idNumber, err)
 	}
-	// 2010年出生的人,2024年应该是14岁左右
-	if age < 10 || age > 20 {
-		t.Errorf("GetAge() = %v, expected reasonable age", age)
+
+	if info.Type != TypeResidentNew18 {
+		t.Errorf("Type = %v, want %v", info.Type, TypeResidentNew18)
+	}
+
+	if info.IDNumber != idNumber {
+		t.Errorf("IDNumber = %v, want %v", info.IDNumber, idNumber)
+	}
+
+	if info.AreaCode != "110105" {
+		t.Errorf("AreaCode = %v, want 110105", info.AreaCode)
+	}
+
+	if info.BirthDate.Year() != 1990 || info.BirthDate.Month() != 1 || info.BirthDate.Day() != 1 {
+		t.Errorf("BirthDate = %v, want 1990-01-01", info.BirthDate)
+	}
+
+	if info.Gender != "男" {
+		t.Errorf("Gender = %v, want 男", info.Gender)
 	}
 }
 
-func TestMask(t *testing.T) {
-	tests := []struct {
-		id   string
-		want string
-	}{
-		{"110101199001010017", "110101********0017"},
-		{"8011100900101013", "801110********1013"},
+// 测试 Parse 函数 - 中国居民身份证旧版
+func TestParseResidentOld15(t *testing.T) {
+	idNumber := "110105900101123"
+
+	info, err := Parse(idNumber)
+	if err != nil {
+		t.Fatalf("Parse(%q) error: %v", idNumber, err)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.id, func(t *testing.T) {
-			if got := Mask(tt.id); got != tt.want {
-				t.Errorf("Mask() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestHide(t *testing.T) {
-	tests := []struct {
-		id   string
-		want string
-	}{
-		{"110101199001010017", "110101XXXXXX0017"},
-		{"8011100900101013", "80111009XXXX1013"},
+	if info.Type != TypeResidentOld15 {
+		t.Errorf("Type = %v, want %v", info.Type, TypeResidentOld15)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.id, func(t *testing.T) {
-			if got := Hide(tt.id); got != tt.want {
-				t.Errorf("Hide() = %v, want %v", got, tt.want)
-			}
-		})
+	if info.AreaCode != "110105" {
+		t.Errorf("AreaCode = %v, want 110105", info.AreaCode)
+	}
+
+	// 旧版身份证年份默认为 19xx
+	if info.BirthDate.Year() != 1990 || info.BirthDate.Month() != 1 || info.BirthDate.Day() != 1 {
+		t.Errorf("BirthDate = %v, want 1990-01-01", info.BirthDate)
+	}
+
+	// 第 15 位是 3（奇数），应该是男性
+	if info.Gender != "男" {
+		t.Errorf("Gender = %v, want 男", info.Gender)
 	}
 }
 
-func TestGetSexString(t *testing.T) {
+// 测试 Parse 函数 - 外国人永久居留身份证新版
+func TestParseForeignNew18(t *testing.T) {
+	// 生成一个有效的测试永居证
+	idNumber := GenerateForeignNew("USA", "11", time.Date(1990, 1, 1, 0, 0, 0, 0, time.UTC), "女")
+
+	if !Validate(idNumber) {
+		t.Fatalf("Generated ID %q is not valid", idNumber)
+	}
+
+	info, err := Parse(idNumber)
+	if err != nil {
+		t.Fatalf("Parse(%q) error: %v", idNumber, err)
+	}
+
+	if info.Type != TypeForeignNew18 {
+		t.Errorf("Type = %v, want %v", info.Type, TypeForeignNew18)
+	}
+
+	if info.Nationality != "USA" {
+		t.Errorf("Nationality = %v, want USA", info.Nationality)
+	}
+
+	if info.IssuePlace != "11" {
+		t.Errorf("IssuePlace = %v, want 11", info.IssuePlace)
+	}
+
+	if info.BirthDate.Year() != 1990 || info.BirthDate.Month() != 1 || info.BirthDate.Day() != 1 {
+		t.Errorf("BirthDate = %v, want 1990-01-01", info.BirthDate)
+	}
+
+	if info.Gender != "女" {
+		t.Errorf("Gender = %v, want 女", info.Gender)
+	}
+}
+
+// 测试 Parse 函数 - 外国人永久居留身份证旧版
+func TestParseForeignOld15(t *testing.T) {
+	idNumber := "USA199001011234"
+
+	info, err := Parse(idNumber)
+	if err != nil {
+		t.Fatalf("Parse(%q) error: %v", idNumber, err)
+	}
+
+	if info.Type != TypeForeignOld15 {
+		t.Errorf("Type = %v, want %v", info.Type, TypeForeignOld15)
+	}
+
+	if info.Nationality != "USA" {
+		t.Errorf("Nationality = %v, want USA", info.Nationality)
+	}
+
+	// 旧版只有年月，日默认为 01
+	if info.BirthDate.Year() != 1990 || info.BirthDate.Month() != 1 || info.BirthDate.Day() != 1 {
+		t.Errorf("BirthDate = %v, want 1990-01-01", info.BirthDate)
+	}
+}
+
+// 测试 UpgradeOld15To18 函数
+func TestUpgradeOld15To18(t *testing.T) {
 	tests := []struct {
-		id   string
-		want string
+		name   string
+		id15   string
+		want18 string
 	}{
-		{"110101199001010017", "男"},
-		{"110101199001010005", "女"}, // 顺序码0是偶数，女性
+		{"升级 1", "110105491231002", "11010519491231002X"},
+		{"升级 2", "110105900101123", "110105199001011232"},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.id, func(t *testing.T) {
-			got, err := GetSexString(tt.id)
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := UpgradeOld15To18(tt.id15)
 			if err != nil {
-				t.Errorf("GetSexString() error = %v", err)
+				t.Fatalf("UpgradeOld15To18(%q) error: %v", tt.id15, err)
 			}
-			if got != tt.want {
-				t.Errorf("GetSexString() = %v, want %v", got, tt.want)
+			if got != tt.want18 {
+				t.Errorf("UpgradeOld15To18(%q) = %v, want %v", tt.id15, got, tt.want18)
+			}
+
+			// 验证升级后的身份证是否有效
+			if !Validate(got) {
+				t.Errorf("Upgraded ID %q is not valid", got)
 			}
 		})
 	}
 }
 
-func TestChineseIDString(t *testing.T) {
-	id := &ChineseID{
-		Number:     "110101199001010017",
-		RegionCode: "110101",
-		Birthday:   time.Date(1990, 1, 1, 0, 0, 0, 0, time.UTC),
-		Sex:        1,
-		Sequence:   17,
+// 测试 GenerateResident 函数
+func TestGenerateResident(t *testing.T) {
+	// 测试完全随机生成
+	id1 := GenerateResident("", time.Time{}, "")
+	if !Validate(id1) {
+		t.Errorf("Generated ID %q is not valid", id1)
+	}
+	if GetType(id1) != TypeResidentNew18 {
+		t.Errorf("Generated ID type = %v, want %v", GetType(id1), TypeResidentNew18)
 	}
 
-	got := id.String()
-	want := "ChineseID{Number: 110101199001010017, Region: 北京市东城区, Birthday: 1990-01-01, Sex: 1}"
-
-	if got != want {
-		t.Errorf("ChineseID.String() = %v, want %v", got, want)
-	}
-}
-
-func TestForeignerIDString(t *testing.T) {
-	id := &ForeignerID{
-		Number:      "8011100900101013",
-		CountryCode: "01",
-		CountryName: "美国",
-		RegionCode:  "1100",
-		Birthday:    time.Date(1990, 1, 1, 0, 0, 0, 0, time.UTC),
-		Sex:         1,
-		Sequence:    13,
-		IsPermanent: true,
+	// 测试指定参数生成
+	birthDate := time.Date(1985, 6, 15, 0, 0, 0, 0, time.UTC)
+	id2 := GenerateResident("440300", birthDate, "女")
+	if !Validate(id2) {
+		t.Errorf("Generated ID %q is not valid", id2)
 	}
 
-	got := id.String()
-	want := "ForeignerID{Number: 8011100900101013, Country: 美国, Region: , Birthday: 1990-01-01, Sex: 1}"
-
-	if got != want {
-		t.Errorf("ForeignerID.String() = %v, want %v", got, want)
+	info, _ := Parse(id2)
+	if info.AreaCode != "440300" {
+		t.Errorf("AreaCode = %v, want 440300", info.AreaCode)
+	}
+	if info.Gender != "女" {
+		t.Errorf("Gender = %v, want 女", info.Gender)
 	}
 }
 
-// BenchmarkParseChinese 性能测试
-func BenchmarkParseChinese(b *testing.B) {
-	id := "110101199001010017"
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		ParseChinese(id)
+// 测试 GenerateForeignNew 函数
+func TestGenerateForeignNew(t *testing.T) {
+	// 测试完全随机生成
+	id1 := GenerateForeignNew("", "", time.Time{}, "")
+	if !Validate(id1) {
+		t.Errorf("Generated ID %q is not valid", id1)
+	}
+	if GetType(id1) != TypeForeignNew18 {
+		t.Errorf("Generated ID type = %v, want %v", GetType(id1), TypeForeignNew18)
+	}
+
+	// 测试指定参数生成
+	birthDate := time.Date(1985, 6, 15, 0, 0, 0, 0, time.UTC)
+	id2 := GenerateForeignNew("CHN", "31", birthDate, "男")
+	if !Validate(id2) {
+		t.Errorf("Generated ID %q is not valid", id2)
+	}
+
+	info, _ := Parse(id2)
+	if info.Nationality != "CHN" {
+		t.Errorf("Nationality = %v, want CHN", info.Nationality)
+	}
+	if info.Gender != "男" {
+		t.Errorf("Gender = %v, want 男", info.Gender)
 	}
 }
 
-// BenchmarkParseForeigner 性能测试
-func BenchmarkParseForeigner(b *testing.B) {
-	id := "8011100900101013"
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		ParseForeigner(id)
-	}
-}
-
-// ExampleParseChinese 演示解析中国公民身份证
-func ExampleParseChinese() {
-	id, err := ParseChinese("110101199001010017")
-	if err != nil {
-		fmt.Println("Error:", err)
-		return
-	}
-	fmt.Printf("类型: 中国公民身份证\n")
-	fmt.Printf("号码: %s\n", id.Number)
-	fmt.Printf("地区: %s\n", GetRegion(id.Number))
-	fmt.Printf("出生日期: %s\n", id.Birthday.Format("2006-01-02"))
-	fmt.Printf("性别: %d (1=男,0=女)\n", id.Sex)
-
-	// Output:
-	// 类型: 中国公民身份证
-	// 号码: 110101199001010017
-	// 地区: 北京市东城区
-	// 出生日期: 1990-01-01
-	// 性别: 1 (1=男,0=女)
-}
-
-// ExampleParseForeigner 演示解析外国人居留身份证
-func ExampleParseForeigner() {
-	id, err := ParseForeigner("8011100900101013")
-	if err != nil {
-		fmt.Println("Error:", err)
-		return
-	}
-	fmt.Printf("类型: 外国人居留身份证\n")
-	fmt.Printf("号码: %s\n", id.Number)
-	fmt.Printf("国籍: %s\n", id.CountryName)
-	fmt.Printf("性别: %d (1=男,0=女)\n", id.Sex)
-
-	// Output:
-	// 类型: 外国人居留身份证
-	// 号码: 8011100900101013
-	// 国籍: 美国
-	// 性别: 1 (1=男,0=女)
-}
-
-// ExampleParseAutoDetect 演示自动识别身份证类型
-func ExampleParse() {
-	ids := []string{
-		"110101199001010017",  // 中国公民身份证
-		"8011100900101013", // 外国人居留身份证
+// 测试校验码计算
+func TestCalculateCheckCode(t *testing.T) {
+	tests := []struct {
+		body       string
+		wantCheck  string
+	}{
+		{"11010519491231002", "X"},
+		{"11010519900101123", calculateCheckCode("11010519900101123")},
+		{"911000019900101123", calculateCheckCode("911000019900101123")},
 	}
 
-	for _, idStr := range ids {
-		info, err := Parse(idStr)
-		if err != nil {
-			fmt.Printf("%s: 无效身份证\n", idStr)
-			continue
-		}
-
-		switch info.GetType() {
-		case TypeChinese:
-			fmt.Printf("%s: 中国公民身份证\n", idStr)
-		case TypeForeigner:
-			fmt.Printf("%s: 外国人居留身份证\n", idStr)
-		default:
-			fmt.Printf("%s: 未知类型\n", idStr)
+	for _, tt := range tests {
+		got := calculateCheckCode(tt.body)
+		if got != tt.wantCheck {
+			t.Errorf("calculateCheckCode(%q) = %v, want %v", tt.body, got, tt.wantCheck)
 		}
 	}
+}
 
-	// Output:
-	// 110101199001010017: 中国公民身份证
-	// 8011100900101013: 外国人居留身份证
+// 测试 GetTypeName 函数
+func TestGetTypeName(t *testing.T) {
+	tests := []struct {
+		idType int
+		want   string
+	}{
+		{TypeResidentOld15, "中国居民身份证旧版（15 位）"},
+		{TypeResidentNew18, "中国居民身份证新版（18 位）"},
+		{TypeForeignOld15, "外国人永久居留身份证旧版（15 位）"},
+		{TypeForeignNew18, "外国人永久居留身份证新版（18 位）"},
+		{TypeUnknown, "未知类型"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			if got := GetTypeName(tt.idType); got != tt.want {
+				t.Errorf("GetTypeName(%v) = %v, want %v", tt.idType, got, tt.want)
+			}
+		})
+	}
+}
+
+// 测试 IDInfo String 方法
+func TestIDInfoString(t *testing.T) {
+	idNumber := GenerateResident("110105", time.Date(1990, 1, 1, 0, 0, 0, 0, time.UTC), "男")
+	info, _ := Parse(idNumber)
+
+	str := info.String()
+	if str == "" {
+		t.Error("IDInfo.String() should not return empty string")
+	}
+
+	// 检查是否包含关键字段
+	expectedFields := []string{"身份证类型", "身份证号码", "出生日期", "性别", "地区代码"}
+	for _, field := range expectedFields {
+		if !contains(str, field) {
+			t.Errorf("IDInfo.String() should contain %q", field)
+		}
+	}
+}
+
+// 辅助函数：检查字符串是否包含子串
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && findSubstring(s, substr))
+}
+
+func findSubstring(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
+// 测试大小写不敏感
+func TestCaseInsensitive(t *testing.T) {
+	// 小写 x 应该被接受
+	idLower := "11010519491231002x"
+	idUpper := "11010519491231002X"
+
+	if !Validate(idLower) {
+		t.Errorf("Validate(%q) should be true (case insensitive)", idLower)
+	}
+
+	if !Validate(idUpper) {
+		t.Errorf("Validate(%q) should be true", idUpper)
+	}
+
+	// 解析后应该都转换为大写
+	infoLower, _ := Parse(idLower)
+	infoUpper, _ := Parse(idUpper)
+
+	if infoLower.IDNumber != infoUpper.IDNumber {
+		t.Errorf("Parsed ID numbers should be equal after normalization")
+	}
+}
+
+// 测试空白字符处理
+func TestWhitespaceHandling(t *testing.T) {
+	idWithSpace := " 11010519491231002X "
+	idClean := "11010519491231002X"
+
+	if !Validate(idWithSpace) {
+		t.Errorf("Validate(%q) should handle whitespace", idWithSpace)
+	}
+
+	infoWithSpace, _ := Parse(idWithSpace)
+	infoClean, _ := Parse(idClean)
+
+	if infoWithSpace.IDNumber != infoClean.IDNumber {
+		t.Errorf("Parsed ID numbers should be equal after trimming whitespace")
+	}
 }

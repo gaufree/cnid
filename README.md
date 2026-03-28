@@ -1,20 +1,28 @@
-# CNID - 中国身份证 Golang 库
+# CNID
 
-支持新版外国人居留身份证的中国身份证验证库。
+中国居民身份证和外国人永久居留身份证 Golang 库。支持新旧版身份证的校验、解析和生成功能。
 
 ## 功能特性
 
-- ✅ 支持中国公民身份证 (18位) 解析与验证
-- ✅ 支持外国人居留身份证 (16位) 解析与验证
-- ✅ 自动识别身份证类型
-- ✅ 校验码验证
-- ✅ 地区代码解析
-- ✅ 国籍解析 (外国人居留身份证)
-- ✅ 出生日期解析
-- ✅ 性别解析
-- ✅ 年龄计算
-- ✅ 脱敏处理 (Mask/Hide)
-- ✅ 完整的单元测试
+- ✅ **中国居民身份证**
+  - 支持 15 位旧版身份证
+  - 支持 18 位新版身份证
+  - 校验码验证（ISO 7064:1983.MOD 11-2）
+  - 出生日期和性别解析
+  - 15 位升级至 18 位
+
+- ✅ **外国人永久居留身份证**
+  - 支持旧版（15 位，3 字母 +12 数字）
+  - 支持 2023 新版（18 位，以 9 开头，"五星卡"）
+  - 校验码验证
+  - 国籍代码、申领地代码解析
+  - 出生日期和性别解析
+
+- ✅ **其他功能**
+  - 随机生成有效身份证号码
+  - 指定参数生成（地区、出生日期、性别）
+  - 大小写不敏感
+  - 自动处理空白字符
 
 ## 安装
 
@@ -23,6 +31,8 @@ go get github.com/gaufree/cnid
 ```
 
 ## 快速开始
+
+### 验证身份证号码
 
 ```go
 package main
@@ -33,141 +43,241 @@ import (
 )
 
 func main() {
-    // 解析中国公民身份证
-    id, err := cnid.ParseChinese("110101199001010017")
-    if err != nil {
-        fmt.Println("错误:", err)
-        return
-    }
-    fmt.Printf("地区: %s\n", cnid.GetRegion(id.Number))
-    fmt.Printf("出生日期: %s\n", id.Birthday.Format("2006-01-02"))
-    fmt.Printf("性别: %d (1=男,0=女)\n", id.Sex)
-
-    // 解析外国人居留身份证 (16位)
-    fid, err := cnid.ParseForeigner("8011100900101013")
-    if err != nil {
-        fmt.Println("错误:", err)
-        return
-    }
-    fmt.Printf("国籍: %s\n", fid.CountryName)
-    fmt.Printf("地区: %s\n", cnid.GetRegion(fid.Number))
-
-    // 自动识别类型
-    info, err := cnid.Parse("110101199001010017")
-    if err != nil {
-        fmt.Println("错误:", err)
-        return
-    }
-    switch info.GetType() {
-    case cnid.TypeChinese:
-        fmt.Println("中国公民身份证")
-    case cnid.TypeForeigner:
-        fmt.Println("外国人居留身份证")
-    }
+    // 中国居民身份证新版（18 位）
+    fmt.Println(cnid.Validate("11010519491231002X")) // true
+    
+    // 中国居民身份证旧版（15 位）
+    fmt.Println(cnid.Validate("110105491231002")) // true
+    
+    // 外国人永久居留身份证新版（18 位）
+    fmt.Println(cnid.Validate("9USA11199001018999")) // true
+    
+    // 外国人永久居留身份证旧版（15 位）
+    fmt.Println(cnid.Validate("USA199001011234")) // true
 }
 ```
 
-## 身份证格式
+### 获取身份证类型
 
-### 中国公民身份证 (18位)
+```go
+package main
 
+import (
+    "fmt"
+    "github.com/gaufree/cnid"
+)
+
+func main() {
+    idType := cnid.GetType("11010519491231002X")
+    fmt.Println(cnid.GetTypeName(idType)) // 输出：中国居民身份证新版（18 位）
+    
+    idType = cnid.GetType("9USA11199001018999")
+    fmt.Println(cnid.GetTypeName(idType)) // 输出：外国人永久居留身份证新版（18 位）
+}
 ```
-[地区代码:6位] + [出生日期:8位] + [顺序码:3位] + [校验码:1位]
-110101        + 19900101       + 123            + X
+
+### 解析身份证信息
+
+```go
+package main
+
+import (
+    "fmt"
+    "time"
+    "github.com/gaufree/cnid"
+)
+
+func main() {
+    // 解析中国居民身份证
+    info, err := cnid.Parse("110105199001011234")
+    if err != nil {
+        fmt.Println(err)
+        return
+    }
+    
+    fmt.Printf("类型：%s\n", cnid.GetTypeName(info.Type))
+    fmt.Printf("出生日期：%s\n", info.BirthDate.Format("2006-01-02"))
+    fmt.Printf("性别：%s\n", info.Gender)
+    fmt.Printf("地区代码：%s\n", info.AreaCode)
+    
+    // 解析外国人永久居留身份证
+    foreignID := cnid.GenerateForeignNew("USA", "11", time.Date(1990, 1, 1, 0, 0, 0, 0, time.UTC), "男")
+    info, err = cnid.Parse(foreignID)
+    if err != nil {
+        fmt.Println(err)
+        return
+    }
+    
+    fmt.Printf("国籍代码：%s\n", info.Nationality)
+    fmt.Printf("申领地代码：%s\n", info.IssuePlace)
+}
 ```
 
-### 外国人居留身份证 (16位)
+### 生成身份证号码
 
-```
-8 + [国籍代码:2位] + [地区代码:4位] + [出生日期:6位] + [顺序码:2位] + [校验码:1位]
-8 + 01            + 1100          + 900101         + 01             + 3
+```go
+package main
+
+import (
+    "fmt"
+    "time"
+    "github.com/gaufree/cnid"
+)
+
+func main() {
+    // 随机生成中国居民身份证
+    id := cnid.GenerateResident("", time.Time{}, "")
+    fmt.Println(id)
+    
+    // 指定参数生成
+    id = cnid.GenerateResident("110105", time.Date(1990, 1, 1, 0, 0, 0, 0, time.UTC), "男")
+    fmt.Println(id)
+    
+    // 随机生成外国人永久居留身份证（新版）
+    foreignID := cnid.GenerateForeignNew("", "", time.Time{}, "")
+    fmt.Println(foreignID)
+    
+    // 指定参数生成
+    foreignID = cnid.GenerateForeignNew("USA", "11", time.Date(1990, 1, 1, 0, 0, 0, 0, time.UTC), "女")
+    fmt.Println(foreignID)
+}
 ```
 
-**格式说明:**
-- 第1位: 固定为 `8`
-- 第2-3位: 国籍代码 (01-99, 数字代码)
-- 第4-7位: 停留/居留地地区代码 (4位)
-- 第8-13位: 出生日期 (YYMMDD, 两位年)
-- 第14-15位: 顺序码 (奇数=男,偶数=女)
-- 第16位: 校验码
+### 15 位身份证升级至 18 位
+
+```go
+package main
+
+import (
+    "fmt"
+    "github.com/gaufree/cnid"
+)
+
+func main() {
+    id18, err := cnid.UpgradeOld15To18("110105491231002")
+    if err != nil {
+        fmt.Println(err)
+        return
+    }
+    fmt.Println(id18) // 输出：11010519491231002X
+}
+```
 
 ## API 文档
 
-### 核心函数
-
-| 函数 | 描述 |
-|------|------|
-| `Parse(idNumber string) (IDInfo, error)` | 自动识别并解析身份证 |
-| `ParseChinese(idNumber string) (*ChineseID, error)` | 解析中国公民身份证 |
-| `ParseForeigner(idNumber string) (*ForeignerID, error)` | 解析外国人居留身份证 |
-| `Validate(idNumber string) bool` | 验证身份证是否有效 |
-| `GetIDType(idNumber string) IDType` | 获取身份证类型 |
-
-### 辅助函数
-
-| 函数 | 描述 |
-|------|------|
-| `GetRegion(idNumber string) string` | 获取地区名称 |
-| `GetCountry(idNumber string) string` | 获取国籍 |
-| `GetAge(idNumber string) (int, error)` | 计算年龄 |
-| `GetBirthdayString(idNumber string) (string, error)` | 获取格式化出生日期 |
-| `GetSexString(idNumber string) (string, error)` | 获取性别字符串 |
-| `Mask(idNumber string) string` | 脱敏处理 (显示前后部分) |
-| `Hide(idNumber string) string` | 隐藏出生日期 |
-
-### 数据结构
-
-#### ChineseID
-
-```go
-type ChineseID struct {
-    Number     string    // 身份证号码
-    RegionCode string    // 地区代码
-    Birthday   time.Time // 出生日期
-    Sex        int       // 性别: 0-女, 1-男
-    Sequence   int       // 顺序码
-    Checksum   rune      // 校验码
-}
-```
-
-#### ForeignerID
-
-```go
-type ForeignerID struct {
-    Number      string    // 证件号码
-    CountryCode string    // 国籍代码 (2位数字)
-    CountryName string    // 国籍名称
-    RegionCode  string    // 地区代码
-    Birthday    time.Time // 出生日期
-    Sex         int       // 性别: 0-女, 1-男
-    Sequence    int       // 顺序码
-    IsPermanent bool      // 是否长期有效
-    Checksum    rune      // 校验码
-}
-```
-
-### IDType 常量
+### 常量
 
 ```go
 const (
-    TypeUnknown   IDType = 0  // 未知类型
-    TypeChinese   IDType = 1  // 中国公民身份证
-    TypeForeigner IDType = 2  // 外国人居留身份证
+    TypeUnknown        = iota // 未知类型
+    TypeResidentOld15         // 中国居民身份证旧版（15 位）
+    TypeResidentNew18         // 中国居民身份证新版（18 位）
+    TypeForeignOld15          // 外国人永久居留身份证旧版（15 位）
+    TypeForeignNew18          // 外国人永久居留身份证新版（18 位）
 )
+```
+
+### 函数
+
+#### `Validate(idNumber string) bool`
+验证身份证号码是否有效。
+
+#### `GetType(idNumber string) int`
+获取身份证类型。
+
+#### `GetTypeName(idType int) string`
+获取身份证类型的中文名称。
+
+#### `Parse(idNumber string) (*IDInfo, error)`
+解析身份证号码，返回详细信息。
+
+#### `GenerateResident(areaCode string, birthDate time.Time, gender string) string`
+生成随机的中国居民身份证号码（18 位）。
+- `areaCode`: 6 位地区代码（可选，为空则随机生成）
+- `birthDate`: 出生日期（可选，为空则随机生成 1950-2000 年之间的日期）
+- `gender`: 性别（"男"、"女" 或空表示随机）
+
+#### `GenerateForeignNew(nationality, issuePlace string, birthDate time.Time, gender string) string`
+生成随机的新版外国人永久居留身份证号码（18 位）。
+- `nationality`: 3 位国籍代码（可选）
+- `issuePlace`: 2 位申领地代码（可选）
+- `birthDate`: 出生日期（可选）
+- `gender`: 性别（"男"、"女" 或空表示随机）
+
+#### `UpgradeOld15To18(id15 string) (string, error)`
+将 15 位中国居民身份证升级到 18 位。
+
+### 类型
+
+#### `IDInfo`
+身份证信息结构。
+
+```go
+type IDInfo struct {
+    Type        int       // 身份证类型
+    IDNumber    string    // 身份证号码（标准化后的大写格式）
+    BirthDate   time.Time // 出生日期
+    Gender      string    // 性别（"男" 或 "女"）
+    AreaCode    string    // 地区代码
+    Nationality string    // 国籍代码（仅外国人永久居留身份证）
+    IssuePlace  string    // 申领地代码（仅外国人永久居留身份证）
+}
+```
+
+## 身份证编码规则
+
+### 中国居民身份证（18 位）
+```
+110105 19491231 002 X
+  |        |      |   |
+  |        |      |   └─ 校验码
+  |        |      └───── 顺序码（奇数男，偶数女）
+  |        └──────────── 出生日期（YYYYMMDD）
+  └───────────────────── 地区代码
+```
+
+### 中国居民身份证（15 位旧版）
+```
+110105 491231 002
+  |       |     |
+  |       |     └─ 顺序码
+  |       └─────── 出生日期（YYMMDD）
+  └─────────────── 地区代码
+```
+
+### 外国人永久居留身份证（18 位新版/"五星卡"）
+```
+9 USA 11 19900101 123 X
+|  |    |     |      |   |
+|  |    |     |      |   └─ 校验码
+|  |    |     |      └───── 顺序码（奇数男，偶数女）
+|  |    |     └──────────── 出生日期（YYYYMMDD）
+|  |    └────────────────── 申领地代码
+|  └─────────────────────── 国籍代码（3 位字母）
+└────────────────────────── 外国人标识码（固定为 9）
+```
+
+### 外国人永久居留身份证（15 位旧版）
+```
+USA 19900101 1234
+ |     |       |
+ |     |       └─ 顺序码
+ |     └───────── 出生日期（YYYYMMDD，实际只有年月）
+ └─────────────── 国籍代码（3 位字母）
 ```
 
 ## 运行测试
 
 ```bash
-go test -v ./...
-```
-
-## 运行基准测试
-
-```bash
-go test -bench=. -benchmem
+go test -v
 ```
 
 ## 许可证
 
-MIT License - © gaufree
+MIT License
+
+Copyright (c) 2026 Mark Chen (gaufree)
+
+## 免责声明
+
+本库仅供学习和测试使用，不得用于非法用途。使用本库生成的身份证号码仅用于测试目的，请勿用于真实场景。
